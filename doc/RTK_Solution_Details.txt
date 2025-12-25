@@ -1,0 +1,131 @@
+# RTK (Real-Time Kinematic) 解算流程详解与函数映射
+
+本文档详细描述了 RTK 定位的完整解算流程，并对应了代码中的具体函数实现。
+
+## 1. 系统初始化与数据输入 (Initialization & Input)
+在进入核心解算循环前，系统需要加载观测数据与星历数据。
+*   **相关变量**: `obsd_t` (观测数据), `nav_t` (星历/导航电文), `prcopt_t` (处理选项)
+*   **输入函数**: 
+    *   `input_rnx`: 读取 RINEX 格式观测值。
+    *   `input_nav`: 读取广播星历。
+
+## 2. 时间同步与数据匹配 (Time Synchronization)
+RTK 需要同时利用流动站（Rover）和基准站（Base）的数据。
+*   **操作**: 遍历观测数据，寻找同一时刻（或极短时间差内）的基站与流动站观测值的交集。
+*   **主要入口函数**: `rtkpos` (RTK定位主入口)。
+    *   该函数接收当前的一帧观测数据，并区分 Rover (`rcv=1`) 和 Base (`rcv=2`)。
+
+## 3. 单点定位与初值获取 (SPP / Pre-positioning)
+在进行高精度差分前，必须先获得流动站的米级精度坐标，作为线性化展开的中心（Seed Position），并计算接收机钟差。
+*   **相关函数**: `pntpos` (Point Positioning)
+    *   **步骤**:
+        1.  `satposs`: 计算所有可见卫星的位置(P,V)、钟差(dts)。
+        2.  `estpos`: 使用最小二乘法 (Least Squares) 求解接收机位置 `(x, y, z)` 和钟差 `dt`。
+    *   **作用**: 提供概略坐标 `sol->rr`。如果 RTK 刚启动，这个坐标会初始化卡尔曼滤波的状态向量。
+
+## 4. RTK 核心解算循环 (RTK Processing Loop)
+这是 `rtkpos` 函数内部的核心流程。
+
+### 4.1 状态向量时间更新 (Temporal Update)
+根据上一历元的状态，预测当前历元的状态（先验状态）。
+*   **相关函数**: `udstate`
+*   **操作**:
+    *   处理周跳 (`detect_slip`): 如果检测到周跳，重置对应的模糊度方差。
+    *   状态转移: 
+        *   位置状态: 视为随机游走或静态（取决于 `opt->mode`）。
+        *   模糊度状态: 保持不变（常数），除非发生周跳。
+        *   电离层状态: 视为一阶高斯-马尔可夫过程。
+    *   **输出**: 先验状态 `xp` 和先验协方差 `Pp`。
+
+### 4.2 计算非差残差 (Zero-Differenced Residuals)
+分别计算流动站和基站的"理论观测值"与"实际观测值"之间的差异。
+*   **相关函数**: `zdres` (Zero-difference Residuals)
+*   **操作**:
+    *   `geodist`: 计算卫-地几何距离。
+    *   `satazel`: 计算卫星高度角和方位角。
+    *   `antmodel`: 接收机天线相位中心偏差修正。
+    *   `tropmodel`: 对流层延迟修正（使用 Saastamoinen 模型等）。
+    *   **输出**: 非差残差向量 `y` (包含了接收机钟差、电离层残差、模糊度等)。
+
+### 4.3 构建双差方程 (Double-Differenced Residuals)
+通过在卫星间和接收机间做两次差分，消除公共误差。
+*   **相关函数**: `ddres`
+*   **操作**:
+    *   **选择参考星**: 通常选择高度角最高的卫星作为参考星。
+    *   **双差运算**: `(Rover - Base) - (Rover_Ref - Base_Ref)`。此步骤消除了接收机钟差和卫星钟差。
+    *   **构建 H 矩阵 (Design Matrix)**: 几何设计矩阵，包含单位观测矢量（即雅可比矩阵）。
+    *   **构建 R 矩阵 (Measurement Noise)**: 测量噪声协方差矩阵，基于 `varerr` 计算（考虑高度角和信噪比）。
+    *   **输出**: 双差残差向量 `v`，观测矩阵 `H`，噪声矩阵 `R`。
+
+### 4.4 卡尔曼滤波量测更新 (Measurement Update)
+利用卡尔曼滤波公式将测量信息融合进状态向量。
+*   **相关函数**: `filter`
+*   **操作**:
+    *   计算卡尔曼增益: $K = P H^T (H P H^T + R)^{-1}$
+    *   更新状态: $x = x_{pre} + K v$
+    *   更新协方差: $P = (I - K H) P_{pre}$
+*   **结果**: 得到 **浮点解 (Float Solution)**，此时模糊度 $N$ 仍为实数。
+
+## 5. 模糊度解算 (Ambiguity Resolution - AR)
+将浮点模糊度尝试固定为整数，以获得厘米级精度。
+
+### 5.1 整数搜索
+*   **相关函数**: `resamb_LAMBDA`
+*   **算法**:
+    *   `ddmat`: 构建双差模糊度的协方差矩阵。
+    *   `lambda` (LAMBDA Algorithm): 最小二乘降相关平差。通过 Z 变换将模糊度搜索空间变换为更正交的空间，然后高效搜索整数候选组。
+*   **结果**: 得到几组最优的整数模糊度组合 `zn`。
+
+### 5.2 验证与固定 (Validation)
+*   **Ratio Test**: 计算 最优解残差平方和 / 次优解残差平方和。
+    *   如果 `Ratio > opt->thresar` (如 3.0)，则认为固定成功。
+*   **操作**:
+    *   利用固定的整数模糊度，重新计算位置参数。
+    *   更新 `rtk->sol.stat = SOLQ_FIX`。
+    *   更新最终的高精度坐标 `rtk->sol.rr`。
+
+## 6. 结果输出 (Output)
+*   **相关函数**: `rtkoutstat`
+*   **操作**: 将最终的 GPS 时间、解的状态 (FLOAT/FIX)、坐标 (X/Y/Z) 等格式化输出。
+
+---
+
+## 7. 关键变量与结构体定义
+
+### `rtk_t` (RTK Control Struct)
+RTK 算法的主控制结构体，贯穿整个生命周期。
+*   `sol (sol_t)`: 当前历元的解（结果）。
+    *   `sol.time`: 解算时刻。
+    *   `sol.rr[6]`: 位置与速度 {x,y,z,vx,vy,vz}。
+    *   `sol.qr[6]`: 位置方差/协方差。
+    *   `sol.stat`: 解状态 (1:FIX, 2:FLOAT, 0:NONE)。
+*   `opt (prcopt_t)`: 处理选项 (Processing Options)。
+    *   `mode`: 定位模式 (PMODE_KINEMA 等)。
+    *   `modear`: AR 模式 (ARMODE_CONT, ARMODE_FIX 等)。
+    *   `err[5]`: 测量误差系数 (用于计算 R 矩阵)。
+*   `x[nx]`: 卡尔曼滤波的状态向量 (State Vector)。包含位置、速度、加速度、电离层、模糊度。
+*   `P[nx*nx]`: 状态协方差矩阵 (Covariance Matrix)。
+*   `xa[na]`: 固定解状态向量 (Fixed State)。
+*   `Pa[na*na]`: 固定解协方差矩阵。
+*   `ssat[MAXSAT]`: 卫星状态结构体数组。
+    *   `slip[nf]`: 周跳标志。
+    *   `lock[nf]`: 载波相位锁定计数器。
+    *   `amb[nf]`: 模糊度值。
+
+### `obsd_t` (Observation Data)
+原始观测数据单元。
+*   `time`: 观测采样时间。
+*   `sat`: 卫星 ID。
+*   `P[nf]`: 伪距测量值 (Pseudorange)。
+*   `L[nf]`: 载波相位测量值 (Carrier Phase)。
+*   `SNR[nf]`: 信噪比 (Signal Strength)。
+
+### `nav_t` (Navigation Data)
+导航数据，存储星历。
+*   `eph`: GPS/GAL/QZS/BDS 星历数组。
+*   `geph`: GLONASS 星历数组。
+
+### 矩阵变量 (Internal Matrices)
+*   `v`: 双差残差向量 (Observed - Predicted)。
+*   `H`: 设计矩阵 (Design Matrix)，偏导数矩阵，连接观测值变化与状态变化。
+*   `R`: 测量噪声矩阵，反映观测值的质量。
