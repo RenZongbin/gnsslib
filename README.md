@@ -4,6 +4,8 @@
 
 The *gnsslib* package is a ROS-based GNSS navigation and positioning tool that currently supports SPP and RTK processing. It encompasses the processing of raw measurement data and fundamental definitions for global navigation satellite systems.
 
+The project currently has some issues. If you have any questions, please contact us. (RZB24@buaa.edu.cn)
+
 ## 1. Prerequisites
 
 ### 1.1 C++11 Compiler
@@ -35,7 +37,7 @@ If you are on other OS or just want to build it from source, please follow [thes
 Clone the repository to your catkin workspace (for example `~/catkin_ws/`):
 ```
 cd ~/catkin_ws/src/
-git clone https://github.com/HKUST-Aerial-Robotics/gnsslib.git
+git clone https://github.com/RenZongbin/gnsslib.git
 ```
 Then build the package with:
 ```
