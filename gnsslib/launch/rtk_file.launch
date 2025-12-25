@@ -1,0 +1,9 @@
+<launch>
+    <!-- RTK Node -->
+    <param name="/use_sim_time" value="false" />
+    <node pkg="gnss_comm" type="gnss_rtk" name="gnss_rtk_node" output="screen">
+        <param name="rover_obs_file" value="/home/rzb/gnsslib_ws/RINEX.txt" />
+        <!-- <param name="base_obs_file" value="/home/rzb/gnsslib_ws/hkks334x.20o" /> -->
+        <!-- <param name="nav_file" value="/home/rzb/gnsslib_ws/hkks334x.20n" /> -->
+    </node>
+</launch>
