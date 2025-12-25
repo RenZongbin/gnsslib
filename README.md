@@ -72,7 +72,7 @@ rosbag play sports_field.bag
 ## 5. Acknowledgements
 This package is developed based on [gnss_comm](https://github.com/HKUST-Aerial-Robotics/gnss_comm)and [RTKLIB](http://www.rtklib.com/).
 
-Many of the definitions and utility functions in this package are adapted from [RTKLIB](http://www.rtklib.com/) and [gnss_comm](https://github.com/HKUST-Aerial-Robotics/gnss_comm) .
+Many of the definitions and utility functions in this package are adapted from [gnss_comm](https://github.com/HKUST-Aerial-Robotics/gnss_comm) and [RTKLIB](http://www.rtklib.com/).
 
 ## 6. License
 The source code is released under [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html) license.
